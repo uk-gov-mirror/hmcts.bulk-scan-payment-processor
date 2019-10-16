@@ -15,8 +15,10 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.client.HttpClientErrorException;
 import uk.gov.hmcts.reform.bulkscan.payment.processor.client.payhub.PayHubClientException;
+import uk.gov.hmcts.reform.bulkscan.payment.processor.service.servicebus.CreatePaymentCommandProcessor;
 import uk.gov.hmcts.reform.bulkscan.payment.processor.service.servicebus.PaymentMessageParser;
 import uk.gov.hmcts.reform.bulkscan.payment.processor.service.servicebus.PaymentMessageProcessor;
+import uk.gov.hmcts.reform.bulkscan.payment.processor.service.servicebus.UpdatePaymentCommandProcessor;
 import uk.gov.hmcts.reform.bulkscan.payment.processor.service.servicebus.exceptions.InvalidMessageException;
 import uk.gov.hmcts.reform.bulkscan.payment.processor.service.servicebus.handler.PaymentMessageHandler;
 import uk.gov.hmcts.reform.bulkscan.payment.processor.service.servicebus.model.UpdatePaymentMessage;
@@ -46,6 +48,10 @@ public class PaymentMessageProcessorTest {
 
     private static final String DEAD_LETTER_REASON_PROCESSING_ERROR = "Payment Message processing error";
 
+    private CreatePaymentCommandProcessor createPaymentCommandProcessor;
+
+    private UpdatePaymentCommandProcessor updatePaymentCommandProcessor;
+
     @Mock
     private IMessageReceiver messageReceiver;
 
@@ -63,10 +69,18 @@ public class PaymentMessageProcessorTest {
 
     @BeforeEach
     public void before() throws Exception {
-        paymentMessageProcessor = new PaymentMessageProcessor(
+        createPaymentCommandProcessor = new CreatePaymentCommandProcessor(
             paymentMessageHandler,
+            paymentMessageParser
+        );
+        updatePaymentCommandProcessor = new UpdatePaymentCommandProcessor(
+            paymentMessageHandler,
+            paymentMessageParser
+        );
+        paymentMessageProcessor = new PaymentMessageProcessor(
+            createPaymentCommandProcessor,
+            updatePaymentCommandProcessor,
             messageReceiver,
-            paymentMessageParser,
             10
         );
     }
@@ -328,9 +342,9 @@ public class PaymentMessageProcessorTest {
             .given(paymentMessageParser).parse(any(), any());
 
         paymentMessageProcessor = new PaymentMessageProcessor(
-            paymentMessageHandler,
+            createPaymentCommandProcessor,
+            updatePaymentCommandProcessor,
             messageReceiver,
-            paymentMessageParser,
             1
         );
         Exception processingFailureCause = new RuntimeException(
@@ -373,9 +387,9 @@ public class PaymentMessageProcessorTest {
         )).given(paymentMessageParser).parse(any(), any());
 
         paymentMessageProcessor = new PaymentMessageProcessor(
-            paymentMessageHandler,
+            createPaymentCommandProcessor,
+            updatePaymentCommandProcessor,
             messageReceiver,
-            paymentMessageParser,
             1
         );
 

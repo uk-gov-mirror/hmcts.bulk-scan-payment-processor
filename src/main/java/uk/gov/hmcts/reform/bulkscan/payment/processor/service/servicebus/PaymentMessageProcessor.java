@@ -7,20 +7,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Profile;
-import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
-import uk.gov.hmcts.reform.bulkscan.payment.processor.client.payhub.PayHubClientException;
-import uk.gov.hmcts.reform.bulkscan.payment.processor.service.servicebus.exceptions.InvalidMessageException;
 import uk.gov.hmcts.reform.bulkscan.payment.processor.service.servicebus.exceptions.UnknownMessageProcessingResultException;
 import uk.gov.hmcts.reform.bulkscan.payment.processor.service.servicebus.handler.MessageProcessingResult;
 import uk.gov.hmcts.reform.bulkscan.payment.processor.service.servicebus.handler.MessageProcessingResultType;
-import uk.gov.hmcts.reform.bulkscan.payment.processor.service.servicebus.handler.PaymentMessageHandler;
-import uk.gov.hmcts.reform.bulkscan.payment.processor.service.servicebus.model.CreatePaymentMessage;
-import uk.gov.hmcts.reform.bulkscan.payment.processor.service.servicebus.model.UpdatePaymentMessage;
-
-import static uk.gov.hmcts.reform.bulkscan.payment.processor.service.servicebus.handler.MessageProcessingResultType.POTENTIALLY_RECOVERABLE_FAILURE;
-import static uk.gov.hmcts.reform.bulkscan.payment.processor.service.servicebus.handler.MessageProcessingResultType.SUCCESS;
-import static uk.gov.hmcts.reform.bulkscan.payment.processor.service.servicebus.handler.MessageProcessingResultType.UNRECOVERABLE_FAILURE;
 
 
 @Service
@@ -29,20 +19,20 @@ public class PaymentMessageProcessor {
 
     private static final Logger log = LoggerFactory.getLogger(PaymentMessageProcessor.class);
 
-    private final PaymentMessageHandler paymentMessageHandler;
+    private final CreatePaymentCommandProcessor createPaymentCommandProcessor;
+    private final UpdatePaymentCommandProcessor updatePaymentCommandProcessor;
     private final IMessageReceiver messageReceiver;
-    private final PaymentMessageParser paymentMessageParser;
     private final int maxDeliveryCount;
 
     public PaymentMessageProcessor(
-        PaymentMessageHandler paymentMessageHandler,
+        CreatePaymentCommandProcessor createPaymentCommandProcessor,
+        UpdatePaymentCommandProcessor updatePaymentCommandProcessor,
         IMessageReceiver messageReceiver,
-        PaymentMessageParser paymentMessageParser,
         @Value("${azure.servicebus.payments.max-delivery-count}") int maxDeliveryCount
     ) {
-        this.paymentMessageHandler = paymentMessageHandler;
+        this.createPaymentCommandProcessor = createPaymentCommandProcessor;
+        this.updatePaymentCommandProcessor = updatePaymentCommandProcessor;
         this.messageReceiver = messageReceiver;
-        this.paymentMessageParser = paymentMessageParser;
         this.maxDeliveryCount = maxDeliveryCount;
     }
 
@@ -59,11 +49,11 @@ public class PaymentMessageProcessor {
             } else {
                 switch (message.getLabel()) {
                     case "CREATE":
-                        MessageProcessingResult result = processCreateCommand(message);
-                        tryFinaliseProcessedMessage(message, result);
+                        var createResult = createPaymentCommandProcessor.processCommand(message);
+                        tryFinaliseProcessedMessage(message, createResult);
                         break;
                     case "UPDATE":
-                        var updateResult = processUpdateCommand(message);
+                        var updateResult = updatePaymentCommandProcessor.processCommand(message);
                         tryFinaliseProcessedMessage(message, updateResult);
                         break;
                     default:
@@ -75,63 +65,6 @@ public class PaymentMessageProcessor {
         }
 
         return message != null;
-    }
-
-    private MessageProcessingResult processCreateCommand(IMessage message) {
-        log.info("Started processing payment message with ID {}", message.getMessageId());
-
-        CreatePaymentMessage payment = null;
-
-        try {
-            payment = paymentMessageParser.parse(message.getMessageBody(), CreatePaymentMessage.class);
-            paymentMessageHandler.handlePaymentMessage(payment);
-            log.info(
-                "Processed payment message with ID {}. Envelope ID: {}",
-                message.getMessageId(),
-                payment.envelopeId
-            );
-            return new MessageProcessingResult(SUCCESS);
-        } catch (InvalidMessageException ex) {
-            log.error("Rejected payment message with ID {}, because it's invalid", message.getMessageId(), ex);
-            return new MessageProcessingResult(UNRECOVERABLE_FAILURE, ex);
-        } catch (PayHubClientException ex) {
-            if (ex.getStatus() == HttpStatus.CONFLICT) {
-                log.info(
-                    "Payment Processed with Http 409, message ID {}. Envelope ID: {}",
-                    message.getMessageId(),
-                    payment == null ? "" : payment.envelopeId
-                );
-                return new MessageProcessingResult(SUCCESS, ex);
-            }
-            logMessageProcessingError(message, payment, ex);
-            return new MessageProcessingResult(POTENTIALLY_RECOVERABLE_FAILURE, ex);
-        } catch (Exception ex) {
-            logMessageProcessingError(message, payment, ex);
-            return new MessageProcessingResult(POTENTIALLY_RECOVERABLE_FAILURE);
-        }
-    }
-
-    private MessageProcessingResult processUpdateCommand(IMessage message) {
-        log.info("Started processing update payment message with ID {}", message.getMessageId());
-
-        UpdatePaymentMessage payment = null;
-
-        try {
-            payment = paymentMessageParser.parse(message.getMessageBody(), UpdatePaymentMessage.class);
-            paymentMessageHandler.updatePaymentCaseReference(payment);
-            log.info(
-                "Processed update payment message with ID {}. Envelope ID: {}",
-                message.getMessageId(),
-                payment.envelopeId
-            );
-            return new MessageProcessingResult(SUCCESS);
-        } catch (InvalidMessageException ex) {
-            log.error("Rejected update payment message with ID {}, because it's invalid", message.getMessageId(), ex);
-            return new MessageProcessingResult(UNRECOVERABLE_FAILURE, ex);
-        } catch (Exception ex) {
-            logUpdateMessageProcessingError(message, payment, ex);
-            return new MessageProcessingResult(POTENTIALLY_RECOVERABLE_FAILURE);
-        }
     }
 
     private void tryFinaliseProcessedMessage(IMessage message, MessageProcessingResult processingResult) {
@@ -223,42 +156,5 @@ public class PaymentMessageProcessor {
             processingResultType,
             ex
         );
-    }
-
-    private void logMessageProcessingError(IMessage message, CreatePaymentMessage paymentMessage, Exception exception) {
-        String baseMessage = String.format("Failed to process payment message with ID %s.", message.getMessageId());
-
-        String fullMessage = paymentMessage != null
-            ? baseMessage + String.format(
-                " CCD Case Number: %s, Jurisdiction: %s",
-                paymentMessage.ccdReference,
-                paymentMessage.jurisdiction
-            )
-            : baseMessage;
-
-        log.error(fullMessage, exception);
-    }
-
-    private void logUpdateMessageProcessingError(
-        IMessage message,
-        UpdatePaymentMessage paymentMessage,
-        Exception exception
-    ) {
-
-        String baseMessage = String.format(
-            "Failed to process update payment message with ID %s.",
-            message.getMessageId()
-        );
-
-        String fullMessage = paymentMessage != null
-            ? baseMessage + String.format(
-                " New Case Number: %s, Exception Record Ref: %s,Jurisdiction: %s",
-                paymentMessage.newCaseRef,
-                paymentMessage.exceptionRecordRef,
-                paymentMessage.jurisdiction
-            )
-            : baseMessage;
-
-        log.error(fullMessage, exception);
     }
 }
