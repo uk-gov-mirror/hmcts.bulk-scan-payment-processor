@@ -12,7 +12,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
 
 @Configuration
-@Profile("!nosb") // do not register handler for the nosb (test) profile
+@Profile("!functional") // do not register handler for the 'functional' (test) profile
 public class QueueClientsConfiguration {
     private static final Logger log = LoggerFactory.getLogger(QueueClientsConfiguration.class);
 
